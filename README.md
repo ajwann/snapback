@@ -62,6 +62,7 @@ Settings are read from `~/.claude/safety-net.json` and then `<project>/.claude/s
 - It only sees commands Claude runs through the Bash tool. Commands you type in another terminal, and
   deletions made from inside a script or build tool, take no snapshot.
 - Git-ignored files are not captured unless `include_ignored` matches them.
+- Files inside a submodule or a nested repository are not captured by the outer repository's snapshot.
 - Outside a git repository it does nothing.
 
 ## What it runs and stores
