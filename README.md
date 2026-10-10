@@ -1,0 +1,86 @@
+# safety-net
+
+Claude Code can rewind the edits Claude makes with its file tools, but not what a shell command does.
+safety-net covers that gap: just before Claude runs a Bash command that can destroy uncommitted work,
+it saves a snapshot of the working tree, so the files can be brought back.
+
+Commands that trigger a snapshot:
+- `git reset --hard`
+- `git checkout -- <paths>`, `git checkout .`, `git checkout --force`
+- `git restore` (unless `--staged` only), `git switch --discard-changes`
+- `git clean -f`, `git rm --force`
+- `git stash drop` and `git stash clear` (the discarded stash entries are kept instead)
+- `rm`, `unlink`, `shred`, `truncate`, `find -delete`, `xargs rm`
+
+`rm` is ignored when every target is outside the repository or git-ignored, so clearing a scratch
+directory or `node_modules` takes no snapshot. A snapshot is also skipped when nothing changed since the
+previous one. The command itself is never blocked or delayed for approval.
+
+A snapshot holds tracked and untracked files, honouring `.gitignore`. It is stored as a commit under
+`refs/safety-net/` in the repository, built with a throwaway copy of the index, so your staging area,
+stash, branches and `git status` are untouched.
+
+## Getting files back
+
+```
+safety-net list                  # snapshots, newest first, with the command each one preceded
+safety-net show 7                # what restoring snapshot 7 would change
+safety-net restore 7             # put every file back
+safety-net restore 7 src/app.py  # or only some paths
+```
+
+Or ask Claude to undo it: the bundled `/safety-net:undo` skill walks through the same steps.
+
+- A restore first snapshots the current state, so a restore can itself be undone.
+- Files created after the snapshot are left alone.
+- A kept stash entry is restored onto the stash list; `git stash pop` applies it.
+
+**Hooks:** `PreToolUse` on Bash. **Config:** `{"enabled": true, "keep": 50, "max_age_days": 14, "patterns": [], "include_ignored": [], "announce": true}`.
+Git repositories only.
+
+## Install
+
+From Anthropic's plugin directory, once listed: search for `safety-net` in `/plugin directory` in Claude Code, or under **Customize > Plugins** on claude.ai.
+
+To try it from a clone for one session: `claude --plugin-dir /path/to/safety-net`.
+
+This plugin is for Claude Code: it is built on hooks, which claude.ai chat does not load.
+
+## Configuration
+
+Settings are read from `~/.claude/safety-net.json` and then `<project>/.claude/safety-net.json`. The project file wins, objects merge by key, and a broken file is skipped and logged.
+
+- `patterns`: extra regular expressions. A command matching one is snapshotted first, for example `["\\bmake\\s+distclean\\b"]`.
+- `include_ignored`: globs of git-ignored files to capture as well, for example `[".env*"]`. Off by default,
+  because it writes those files, secrets included, into the repository's local object store. They stay
+  local unless you push `refs/safety-net/*` yourself (`git push --mirror` does).
+- `keep` and `max_age_days`: older snapshots are dropped and their refs deleted.
+- `announce`: set to `false` to hide the one-line banner shown when a snapshot is taken.
+
+## Limits
+
+- It only sees commands Claude runs through the Bash tool. Commands you type in another terminal, and
+  deletions made from inside a script or build tool, take no snapshot.
+- Git-ignored files are not captured unless `include_ignored` matches them.
+- Outside a git repository it does nothing.
+
+## What it runs and stores
+
+It is Python 3.9+ standard library only, makes no network requests, and sends nothing anywhere. Every hook fails open: an internal error is logged to `~/.claude/safety-net/errors.log` and the hook exits 0.
+
+- Runs `git` in the project to write the snapshot commit and its ref under `refs/safety-net/`.
+- Stores the list of snapshots for each repository in `~/.claude/safety-net/`.
+- To remove everything it stored in a repository: `git for-each-ref --format='%(refname)' refs/safety-net/ | xargs -n1 git update-ref -d`.
+
+## Development
+
+```
+python3 -m pytest -q
+claude plugin validate --strict .
+```
+
+`docs/HOOK_SCHEMA.md` records the hook payloads this plugin depends on.
+
+## License
+
+MIT. See `LICENSE`.

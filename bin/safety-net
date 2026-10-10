@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""safety-net CLI: `safety-net [list] | show [ID] | restore [ID] [PATH...]  [--project DIR]`.
+
+Lists the snapshots taken in this repository, shows what one would change, and restores it.
+ID defaults to the latest snapshot.
+"""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import hookio  # noqa: E402
+from safety_net.core import DEFAULTS, PLUGIN, describe, differences, find, load, repo_root, restore  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="safety-net")
+    ap.add_argument("action", nargs="?", default="list", choices=["list", "show", "restore"])
+    ap.add_argument("id", nargs="?", default="last", help="snapshot id (default: the latest)")
+    ap.add_argument("paths", nargs="*", help="with restore: only these files or directories")
+    ap.add_argument("--project", default=os.getcwd())
+    a = ap.parse_args()
+    cwd = Path(a.project)
+    root = repo_root(cwd)
+    if not root:
+        print(f"{os.path.abspath(a.project)} is not inside a git repository; safety-net only works in one")
+        return 1
+    cfg = hookio.load_config(PLUGIN, root, DEFAULTS)
+    if a.action == "list":
+        rows = load(root)
+        if not rows:
+            print("no snapshots for this repository yet")
+        for r in reversed(rows):
+            print(describe(r))
+        return 0
+    try:
+        row = find(root, a.id)
+        if a.action == "show":
+            print(describe(row).strip())
+            if row.get("kind") == "stash":
+                print(f"  a discarded stash entry: {row.get('subject', '')}")
+                return 0
+            changes = differences(root, row, cfg)
+            if not changes:
+                print("  nothing to restore: every file in the snapshot matches the working tree")
+            for status, path in changes:
+                print(f"  {'missing now, would come back' if status == 'A' else 'differs now, would be reverted'}: {path}")
+            return 0
+        for line in restore(root, row, cfg, a.paths, cwd):
+            print(line)
+        return 0
+    except (LookupError, RuntimeError) as e:
+        print(f"safety-net: {e}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
