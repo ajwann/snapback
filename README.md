@@ -12,7 +12,7 @@ Commands that trigger a snapshot:
 - `git stash drop` and `git stash clear` (the discarded stash entries are kept instead)
 - `rm`, `unlink`, `shred`, `truncate`, `find -delete`, `xargs rm`
 
-These are also recognised inside `bash -c '...'`, `sh -c` and `eval`. The snapshot is taken in the
+These are also recognised when the command is wrapped in a nested shell call. The snapshot is taken in the
 repository the command acts on, so `cd ../other && git reset --hard` and `git -C ../other reset --hard`
 protect `../other`, and the restore hint Claude sees names that repository.
 
@@ -31,6 +31,7 @@ snapback list                  # snapshots, newest first, with the command each 
 snapback show 7                # what restoring snapshot 7 would change
 snapback restore 7             # put every file back
 snapback restore 7 src/app.py  # or only some paths
+snapback clear                 # delete every snapshot of this repository
 ```
 
 Or ask Claude to undo it: the bundled `/snapback:undo` skill walks through the same steps.
@@ -83,7 +84,7 @@ It is Python 3.9+ standard library only, makes no network requests, and sends no
 
 - Runs `git` in the project to write the snapshot commit and its ref under `refs/snapback/`.
 - Stores the list of snapshots for each repository in `~/.claude/snapback/`.
-- To remove everything it stored in a repository: `git for-each-ref --format='%(refname)' refs/snapback/ | xargs -n1 git update-ref -d`, then `git gc --prune=now` to free the space.
+- To remove everything it stored in a repository: `snapback clear`, then `git gc --prune=now` to free the space.
 
 ## Development
 

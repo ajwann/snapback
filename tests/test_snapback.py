@@ -323,6 +323,15 @@ def test_cli_list_and_errors(repo, isolated, tmp_path):
     assert code == 1 and "not inside a git repository" in text
 
 
+def test_cli_clear_removes_refs_and_index(repo, isolated):
+    run_hook(pre(repo, "git checkout -- ."), isolated)
+    code, text = cli(repo, "clear", home=isolated)
+    assert code == 0 and "deleted 1 snapshot(s)" in text
+    assert sh(repo, "for-each-ref", "refs/snapback/") == ""
+    assert "no snapshots" in cli(repo, "list", home=isolated)[1]
+    assert "saved snapshot 1" in run_hook(pre(repo, "git checkout -- ."), isolated)["hookSpecificOutput"]["additionalContext"]
+
+
 def test_script_end_to_end_from_subdirectory(repo, isolated):
     (repo / "sub").mkdir()
     (repo / "sub" / "deep.txt").write_text("deep\n")

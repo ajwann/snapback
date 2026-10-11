@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""snapback CLI: `snapback [list] | show [ID] | restore [ID] [PATH...]  [--project DIR]`.
+"""snapback CLI: `snapback [list] | show [ID] | restore [ID] [PATH...] | clear  [--project DIR]`.
 
 Lists the snapshots taken in this repository, shows what one would change, and restores it.
+`clear` deletes every snapshot of the repository.
 ID defaults to the latest snapshot.
 """
 import argparse
@@ -11,13 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 import hookio  # noqa: E402
-from snapback.core import (DEFAULTS, PLUGIN, describe, differences, find, gitlinks, here, load,  # noqa: E402
+from snapback.core import (DEFAULTS, PLUGIN, clear, describe, differences, find, gitlinks, here, load,  # noqa: E402
                              repo_root, restore)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="snapback")
-    ap.add_argument("action", nargs="?", default="list", choices=["list", "show", "restore"])
+    ap.add_argument("action", nargs="?", default="list", choices=["list", "show", "restore", "clear"])
     ap.add_argument("id", nargs="?", default="last", help="snapshot id (default: the latest)")
     ap.add_argument("paths", nargs="*", help="with restore: only these files or directories")
     ap.add_argument("--project", default=os.getcwd())
@@ -37,6 +38,9 @@ def main() -> int:
             print(describe(r))
         for other in sorted({r.get("root") for r in rows if r not in mine}):
             print(f"more in another working tree of this repository: snapback list --project {other}")
+        return 0
+    if a.action == "clear":
+        print(f"deleted {clear(root)} snapshot(s); `git gc --prune=now` frees the space they used")
         return 0
     try:
         row = find(root, a.id)

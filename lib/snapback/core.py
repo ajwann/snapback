@@ -449,6 +449,19 @@ def restore(root: Path, row: dict, cfg: dict, paths: Optional[list] = None, cwd:
     return lines
 
 
+def clear(root: Path) -> int:
+    """Delete every snapshot of this repository, in all its worktrees. Returns how many refs were removed."""
+    with _locked(root):
+        refs = git(root, "for-each-ref", "--format=%(refname)", REF).split()
+        for ref in refs:
+            git(root, "update-ref", "-d", ref, check=False)
+        try:
+            index_file(root).unlink()
+        except OSError:
+            pass
+    return len(refs)
+
+
 def describe(row: dict) -> str:
     when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row.get("t", 0)))
     what = "stash entry" if row.get("kind") == "stash" else "working tree"
