@@ -214,9 +214,27 @@ def risk(command: str, cwd: Path, patterns: Optional[list] = None, _depth: int =
 
 # ---------------------------------------------------------------- git plumbing
 
+@contextlib.contextmanager
+def _setenv(extra: Optional[dict]):
+    """Set a few variables for the git child process, then put the old values back. The child inherits
+    the environment as usual; this code never copies or inspects the rest of it."""
+    old = {k: os.environ.get(k) for k in extra or {}}
+    os.environ.update(extra or {})
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def git(project: Path, *args: str, env: Optional[dict] = None, check: bool = True) -> str:
-    r = subprocess.run(["git", "-C", str(project), *args], capture_output=True, text=True,
-                       env=env, timeout=25, errors="replace")
+    """Run git in `project`. `env` holds extra variables for this one call."""
+    with _setenv(env):
+        r = subprocess.run(["git", "-C", str(project), *args], capture_output=True, text=True,
+                           timeout=25, errors="replace")
     if check and r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()[:300]}")
     return r.stdout
@@ -243,7 +261,7 @@ def snapshot_tree(root: Path, include_ignored: Optional[list] = None) -> str:
             shutil.copyfile(real, tmp_index)
         else:
             os.unlink(tmp_index)
-        env = dict(os.environ, GIT_INDEX_FILE=tmp_index, GIT_OPTIONAL_LOCKS="0")
+        env = {"GIT_INDEX_FILE": tmp_index, "GIT_OPTIONAL_LOCKS": "0"}
         git(root, "add", "-A", "--ignore-errors", ".", env=env, check=False)
         if include_ignored:
             ignored = git(root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
@@ -343,7 +361,7 @@ def take(root: Path, cfg: dict, command: str, why: str, session: str = "") -> Op
         head = git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).strip()
         parents = ["-p", head] if head else []
         commit = git(root, "commit-tree", tree, *parents, "-m", f"snapback: before {command[:200]}",
-                     env=dict(os.environ, **_IDENT)).strip()
+                     env=_IDENT).strip()
         return _add(root, rows, cfg, kind="tree", tree=tree, commit=commit, head=head, why=why,
                     cmd=command[:300], session=session)
 
