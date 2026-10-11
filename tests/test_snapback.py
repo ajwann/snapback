@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ROOT, run_hook
-from safety_net.core import DEFAULTS, GONE, find, handle, load, restore, risk, take
+from snapback.core import DEFAULTS, GONE, find, handle, load, restore, risk, take
 
 
 def sh(cwd, *args):
@@ -39,7 +39,7 @@ def pre(project, command, **kw):
 
 def cli(project, *args, home):
     env = dict(os.environ, HOME=str(home))
-    r = subprocess.run([sys.executable, str(ROOT / "bin" / "safety-net"), *args], cwd=str(project),
+    r = subprocess.run([sys.executable, str(ROOT / "bin" / "snapback"), *args], cwd=str(project),
                        capture_output=True, text=True, env=env, timeout=30)
     return r.returncode, r.stdout
 
@@ -130,7 +130,7 @@ def test_snapshot_goes_to_the_repository_the_command_acts_on(repo, other, comman
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert "saved snapshot 1" in ctx and f"--project {other.resolve()}" in ctx
     assert load(repo) == [] and len(load(other)) == 1
-    assert "lib.py" in sh(other, "ls-tree", "-r", "--name-only", "refs/safety-net/1")
+    assert "lib.py" in sh(other, "ls-tree", "-r", "--name-only", "refs/snapback/1")
 
 
 def test_session_outside_any_repository_still_covers_one_it_enters(repo):
@@ -142,7 +142,7 @@ def test_removing_the_git_directory_is_reported_not_snapshotted(repo):
     for command in ("rm -rf .", "rm -rf .git", f"rm -rf {repo}"):
         out = handle(pre(repo, command))
         assert "no snapshot taken" in out["hookSpecificOutput"]["additionalContext"]
-        assert out["systemMessage"] == "safety-net: no snapshot taken."
+        assert out["systemMessage"] == "snapback: no snapshot taken."
     assert load(repo) == []
 
 
@@ -187,7 +187,7 @@ def test_parallel_hooks_get_distinct_ids(repo, isolated):
     with concurrent.futures.ThreadPoolExecutor(6) as ex:
         list(ex.map(one, range(6)))
     rows = load(repo)
-    refs = sh(repo, "for-each-ref", "--format=%(refname)", "refs/safety-net/").split()
+    refs = sh(repo, "for-each-ref", "--format=%(refname)", "refs/snapback/").split()
     assert len({r["id"] for r in rows}) == len(rows) == len(refs) >= 1
 
 
@@ -197,9 +197,9 @@ def test_snapshot_then_restore_after_reset_hard_and_clean(repo, isolated):
     assert sh(repo, "status", "--porcelain") == before and sh(repo, "diff", "--cached", "--name-only") == ""
     ctx = out["hookSpecificOutput"]
     assert ctx["hookEventName"] == "PreToolUse" and "permissionDecision" not in ctx
-    assert "saved snapshot 1" in ctx["additionalContext"] and "safety-net restore 1" in ctx["additionalContext"]
-    assert out["systemMessage"].startswith("safety-net: saved snapshot 1")
-    assert sh(repo, "for-each-ref", "--format=%(refname)", "refs/safety-net/").split() == ["refs/safety-net/1"]
+    assert "saved snapshot 1" in ctx["additionalContext"] and "snapback restore 1" in ctx["additionalContext"]
+    assert out["systemMessage"].startswith("snapback: saved snapshot 1")
+    assert sh(repo, "for-each-ref", "--format=%(refname)", "refs/snapback/").split() == ["refs/snapback/1"]
 
     sh(repo, "reset", "--hard", "-q")
     sh(repo, "clean", "-fdq")
@@ -248,18 +248,18 @@ def test_safe_commands_non_repos_and_disabled_are_silent(repo, project, tmp_path
     plain.mkdir()
     assert handle(pre(plain, "rm -rf .")) is None
     (repo / ".claude").mkdir()
-    (repo / ".claude" / "safety-net.json").write_text('{"enabled": false}')
+    (repo / ".claude" / "snapback.json").write_text('{"enabled": false}')
     assert handle(pre(repo, "git reset --hard")) is None
 
 
 def test_config_patterns_announce_and_include_ignored(repo):
     (repo / ".env").write_text("SECRET=1\n")
     (repo / ".claude").mkdir()
-    (repo / ".claude" / "safety-net.json").write_text(
+    (repo / ".claude" / "snapback.json").write_text(
         json.dumps({"patterns": [r"\bmake\s+distclean\b"], "announce": False, "include_ignored": [".env*"]}))
     out = handle(pre(repo, "make distclean"))
     assert "systemMessage" not in out and "saved snapshot 1" in out["hookSpecificOutput"]["additionalContext"]
-    assert ".env" in sh(repo, "ls-tree", "-r", "--name-only", "refs/safety-net/1").split()
+    assert ".env" in sh(repo, "ls-tree", "-r", "--name-only", "refs/snapback/1").split()
     (repo / ".env").unlink()
     cfg = dict(DEFAULTS, include_ignored=[".env*"])
     restore(repo, find(repo, "1"), cfg)
@@ -269,7 +269,7 @@ def test_config_patterns_announce_and_include_ignored(repo):
 def test_ignored_files_are_left_out_by_default(repo):
     (repo / ".env").write_text("SECRET=1\n")
     handle(pre(repo, "git clean -fdx"))
-    assert ".env" not in sh(repo, "ls-tree", "-r", "--name-only", "refs/safety-net/1").split()
+    assert ".env" not in sh(repo, "ls-tree", "-r", "--name-only", "refs/snapback/1").split()
 
 
 def test_prune_by_count_and_age(repo):
@@ -278,11 +278,11 @@ def test_prune_by_count_and_age(repo):
         (repo / "app.py").write_text(f"edit {i}\n")
         take(repo, cfg, f"rm {i}", "rm")
     assert [r["id"] for r in load(repo)] == [3, 4, 5]
-    refs = sh(repo, "for-each-ref", "--format=%(refname)", "refs/safety-net/").split()
-    assert sorted(refs) == ["refs/safety-net/3", "refs/safety-net/4", "refs/safety-net/5"]
+    refs = sh(repo, "for-each-ref", "--format=%(refname)", "refs/snapback/").split()
+    assert sorted(refs) == ["refs/snapback/3", "refs/snapback/4", "refs/snapback/5"]
     rows = load(repo)
     rows[0]["t"] = int(time.time()) - 30 * 86400
-    from safety_net.core import _save
+    from snapback.core import _save
     _save(repo, rows)
     (repo / "app.py").write_text("edit 9\n")
     take(repo, DEFAULTS, "rm 9", "rm")

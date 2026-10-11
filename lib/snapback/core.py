@@ -16,8 +16,8 @@ from typing import Optional
 
 import hookio
 
-PLUGIN = "safety-net"
-REF = "refs/safety-net/"
+PLUGIN = "snapback"
+REF = "refs/snapback/"
 
 DEFAULTS = {
     "enabled": True,
@@ -235,7 +235,7 @@ def snapshot_tree(root: Path, include_ignored: Optional[list] = None) -> str:
     """Tree object of the working tree (tracked + untracked, honouring .gitignore). Touches nothing visible:
     it uses a throwaway index file seeded from the real one so unchanged files are not re-hashed."""
     gitdir = Path(git(root, "rev-parse", "--absolute-git-dir").strip())
-    fd, tmp_index = tempfile.mkstemp(prefix="safety-net-index-")
+    fd, tmp_index = tempfile.mkstemp(prefix="snapback-index-")
     os.close(fd)
     try:
         real = gitdir / "index"
@@ -260,8 +260,8 @@ def snapshot_tree(root: Path, include_ignored: Optional[list] = None) -> str:
             pass
 
 
-_IDENT = {"GIT_AUTHOR_NAME": "safety-net", "GIT_AUTHOR_EMAIL": "safety-net@localhost",
-          "GIT_COMMITTER_NAME": "safety-net", "GIT_COMMITTER_EMAIL": "safety-net@localhost"}
+_IDENT = {"GIT_AUTHOR_NAME": "snapback", "GIT_AUTHOR_EMAIL": "snapback@localhost",
+          "GIT_COMMITTER_NAME": "snapback", "GIT_COMMITTER_EMAIL": "snapback@localhost"}
 
 
 # ---------------------------------------------------------------- snapshot index
@@ -342,7 +342,7 @@ def take(root: Path, cfg: dict, command: str, why: str, session: str = "") -> Op
             return None
         head = git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).strip()
         parents = ["-p", head] if head else []
-        commit = git(root, "commit-tree", tree, *parents, "-m", f"safety-net: before {command[:200]}",
+        commit = git(root, "commit-tree", tree, *parents, "-m", f"snapback: before {command[:200]}",
                      env=dict(os.environ, **_IDENT)).strip()
         return _add(root, rows, cfg, kind="tree", tree=tree, commit=commit, head=head, why=why,
                     cmd=command[:300], session=session)
@@ -373,7 +373,7 @@ def pin_stashes(root: Path, cfg: dict, command: str, session: str = "") -> list:
     return out
 
 
-# ---------------------------------------------------------------- restore (used by bin/safety-net)
+# ---------------------------------------------------------------- restore (used by bin/snapback)
 
 def find(root: Path, ident: str) -> dict:
     rows = load(root)
@@ -386,9 +386,9 @@ def find(root: Path, ident: str) -> dict:
         if str(r["id"]) == ident.lstrip("#"):
             if r not in mine:
                 raise LookupError(f"snapshot {r['id']} belongs to another working tree of this repository; "
-                                  f"restore it there: safety-net restore {r['id']} --project {r.get('root')}")
+                                  f"restore it there: snapback restore {r['id']} --project {r.get('root')}")
             return r
-    raise LookupError(f"no snapshot {ident}; `safety-net list` shows the ones that exist")
+    raise LookupError(f"no snapshot {ident}; `snapback list` shows the ones that exist")
 
 
 def gitlinks(root: Path, tree: str) -> set:
@@ -412,11 +412,11 @@ def differences(root: Path, row: dict, cfg: dict) -> list:
 def restore(root: Path, row: dict, cfg: dict, paths: Optional[list] = None, cwd: Optional[Path] = None) -> list:
     """Put the snapshot's files back. Returns printable lines. Files created since the snapshot are kept."""
     if row.get("kind") == "stash":
-        git(root, "stash", "store", "-m", row.get("subject") or "restored by safety-net", row["commit"])
+        git(root, "stash", "store", "-m", row.get("subject") or "restored by snapback", row["commit"])
         return [f"put snapshot {row['id']} back on the stash list as stash@{{0}}: {row.get('subject', '')}"]
     changes = differences(root, row, cfg)
     lines = []
-    backup = take(root, cfg, f"safety-net restore {row['id']}", "safety-net restore")
+    backup = take(root, cfg, f"snapback restore {row['id']}", "snapback restore")
     if backup:
         lines.append(f"saved the current state as snapshot {backup['id']} first, so this restore can be undone")
     where, spec = (cwd or root, paths) if paths else (root, ["."])
@@ -458,22 +458,22 @@ def handle(event: dict) -> Optional[dict]:
     there = "" if repo_root(cwd) == root else f" --project {root}"
     session = event.get("session_id") or ""
     if why == GONE:
-        text = (f"safety-net: no snapshot taken. This command removes the git directory of {root}, which is where "
-                "snapshots are kept, so safety-net cannot bring anything back afterwards.")
+        text = (f"snapback: no snapshot taken. This command removes the git directory of {root}, which is where "
+                "snapshots are kept, so snapback cannot bring anything back afterwards.")
     elif why.startswith("git stash"):
         rows = pin_stashes(root, cfg, command, session)
         if not rows:
             return None
         ids = ", ".join(str(r["id"]) for r in rows)
-        text = (f"safety-net: kept the stash entr{'y' if len(rows) == 1 else 'ies'} this command discards "
-                f"(snapshot {ids}). `safety-net restore <id>{there}` puts one back on the stash list.")
+        text = (f"snapback: kept the stash entr{'y' if len(rows) == 1 else 'ies'} this command discards "
+                f"(snapshot {ids}). `snapback restore <id>{there}` puts one back on the stash list.")
     else:
         row = take(root, cfg, command, why, session)
         if not row:
             return None  # identical to the previous snapshot: already covered
-        text = (f"safety-net: saved snapshot {row['id']} of the working tree before this command ({why}). "
-                f"If it loses work, `safety-net show {row['id']}{there}` lists what differs and "
-                f"`safety-net restore {row['id']} [paths]{there}` brings the files back.")
+        text = (f"snapback: saved snapshot {row['id']} of the working tree before this command ({why}). "
+                f"If it loses work, `snapback show {row['id']}{there}` lists what differs and "
+                f"`snapback restore {row['id']} [paths]{there}` brings the files back.")
     out = hookio.context("PreToolUse", text)
     if cfg.get("announce", True):
         out = hookio.with_system_message(out, text.split(". ")[0] + ".")

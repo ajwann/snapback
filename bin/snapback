@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""safety-net CLI: `safety-net [list] | show [ID] | restore [ID] [PATH...]  [--project DIR]`.
+"""snapback CLI: `snapback [list] | show [ID] | restore [ID] [PATH...]  [--project DIR]`.
 
 Lists the snapshots taken in this repository, shows what one would change, and restores it.
 ID defaults to the latest snapshot.
@@ -11,12 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 import hookio  # noqa: E402
-from safety_net.core import (DEFAULTS, PLUGIN, describe, differences, find, gitlinks, here, load,  # noqa: E402
+from snapback.core import (DEFAULTS, PLUGIN, describe, differences, find, gitlinks, here, load,  # noqa: E402
                              repo_root, restore)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="safety-net")
+    ap = argparse.ArgumentParser(prog="snapback")
     ap.add_argument("action", nargs="?", default="list", choices=["list", "show", "restore"])
     ap.add_argument("id", nargs="?", default="last", help="snapshot id (default: the latest)")
     ap.add_argument("paths", nargs="*", help="with restore: only these files or directories")
@@ -25,7 +25,7 @@ def main() -> int:
     cwd = Path(a.project)
     root = repo_root(cwd)
     if not root:
-        print(f"{os.path.abspath(a.project)} is not inside a git repository; safety-net only works in one")
+        print(f"{os.path.abspath(a.project)} is not inside a git repository; snapback only works in one")
         return 1
     cfg = hookio.load_config(PLUGIN, root, DEFAULTS)
     if a.action == "list":
@@ -36,7 +36,7 @@ def main() -> int:
         for r in reversed(mine):
             print(describe(r))
         for other in sorted({r.get("root") for r in rows if r not in mine}):
-            print(f"more in another working tree of this repository: safety-net list --project {other}")
+            print(f"more in another working tree of this repository: snapback list --project {other}")
         return 0
     try:
         row = find(root, a.id)
@@ -57,7 +57,7 @@ def main() -> int:
             print(line)
         return 0
     except (LookupError, RuntimeError) as e:
-        print(f"safety-net: {e}")
+        print(f"snapback: {e}")
         return 1
 
 

@@ -1,7 +1,7 @@
-# safety-net
+# snapback
 
 Claude Code can rewind the edits Claude makes with its file tools, but not what a shell command does.
-safety-net covers that gap: just before Claude runs a Bash command that can destroy uncommitted work,
+snapback covers that gap: just before Claude runs a Bash command that can destroy uncommitted work,
 it saves a snapshot of the working tree, so the files can be brought back.
 
 Commands that trigger a snapshot:
@@ -21,19 +21,19 @@ directory or `node_modules` takes no snapshot. A snapshot is also skipped when n
 previous one. The command itself is never blocked or delayed for approval.
 
 A snapshot holds tracked and untracked files, honouring `.gitignore`. It is stored as a commit under
-`refs/safety-net/` in the repository, built with a throwaway copy of the index, so your staging area,
+`refs/snapback/` in the repository, built with a throwaway copy of the index, so your staging area,
 stash, branches and `git status` are untouched.
 
 ## Getting files back
 
 ```
-safety-net list                  # snapshots, newest first, with the command each one preceded
-safety-net show 7                # what restoring snapshot 7 would change
-safety-net restore 7             # put every file back
-safety-net restore 7 src/app.py  # or only some paths
+snapback list                  # snapshots, newest first, with the command each one preceded
+snapback show 7                # what restoring snapshot 7 would change
+snapback restore 7             # put every file back
+snapback restore 7 src/app.py  # or only some paths
 ```
 
-Or ask Claude to undo it: the bundled `/safety-net:undo` skill walks through the same steps.
+Or ask Claude to undo it: the bundled `/snapback:undo` skill walks through the same steps.
 
 - A restore first snapshots the current state, so a restore can itself be undone.
 - Files created after the snapshot are left alone.
@@ -45,20 +45,20 @@ Git repositories only.
 
 ## Install
 
-From Anthropic's plugin directory, once listed: search for `safety-net` in `/plugin directory` in Claude Code, or under **Customize > Plugins** on claude.ai.
+From Anthropic's plugin directory, once listed: search for `snapback` in `/plugin directory` in Claude Code, or under **Customize > Plugins** on claude.ai.
 
-To try it from a clone for one session: `claude --plugin-dir /path/to/safety-net`.
+To try it from a clone for one session: `claude --plugin-dir /path/to/snapback`.
 
 This plugin is for Claude Code: it is built on hooks, which claude.ai chat does not load.
 
 ## Configuration
 
-Settings are read from `~/.claude/safety-net.json` and then `<project>/.claude/safety-net.json`. The project file wins, objects merge by key, and a broken file is skipped and logged.
+Settings are read from `~/.claude/snapback.json` and then `<project>/.claude/snapback.json`. The project file wins, objects merge by key, and a broken file is skipped and logged.
 
 - `patterns`: extra regular expressions. A command matching one is snapshotted first, for example `["\\bmake\\s+distclean\\b"]`.
 - `include_ignored`: globs of git-ignored files to capture as well, for example `[".env*"]`. Off by default,
   because it writes those files, secrets included, into the repository's local object store. They stay
-  local unless you push `refs/safety-net/*` yourself (`git push --mirror` does).
+  local unless you push `refs/snapback/*` yourself (`git push --mirror` does).
 - `keep` and `max_age_days`: older snapshots are dropped and their refs deleted.
 - `announce`: set to `false` to hide the one-line banner shown when a snapshot is taken.
 
@@ -69,7 +69,7 @@ Settings are read from `~/.claude/safety-net.json` and then `<project>/.claude/s
 - It covers deleting and discarding, not overwriting: `mv`, `cp`, `> file` and `sed -i` take no snapshot
   unless you add them to `patterns`.
 - `rm -rf .git`, or `rm -rf` of the whole repository, cannot be undone: the snapshots live in `.git`.
-  safety-net says so instead of taking one.
+  snapback says so instead of taking one.
 - A snapshot copies untracked files into the repository's object store, so a large untracked file that
   is not git-ignored makes `.git` grow by about its size until the snapshot expires.
 - A file that was staged and then deleted from disk is not in the snapshot.
@@ -79,11 +79,11 @@ Settings are read from `~/.claude/safety-net.json` and then `<project>/.claude/s
 
 ## What it runs and stores
 
-It is Python 3.9+ standard library only, makes no network requests, and sends nothing anywhere. Every hook fails open: an internal error is logged to `~/.claude/safety-net/errors.log` and the hook exits 0.
+It is Python 3.9+ standard library only, makes no network requests, and sends nothing anywhere. Every hook fails open: an internal error is logged to `~/.claude/snapback/errors.log` and the hook exits 0.
 
-- Runs `git` in the project to write the snapshot commit and its ref under `refs/safety-net/`.
-- Stores the list of snapshots for each repository in `~/.claude/safety-net/`.
-- To remove everything it stored in a repository: `git for-each-ref --format='%(refname)' refs/safety-net/ | xargs -n1 git update-ref -d`, then `git gc --prune=now` to free the space.
+- Runs `git` in the project to write the snapshot commit and its ref under `refs/snapback/`.
+- Stores the list of snapshots for each repository in `~/.claude/snapback/`.
+- To remove everything it stored in a repository: `git for-each-ref --format='%(refname)' refs/snapback/ | xargs -n1 git update-ref -d`, then `git gc --prune=now` to free the space.
 
 ## Development
 

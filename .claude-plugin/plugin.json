@@ -1,13 +1,13 @@
 {
-  "name": "safety-net",
+  "name": "snapback",
   "version": "0.1.0",
   "description": "Snapshots the working tree before Claude runs a Bash command that can destroy uncommitted work (git reset --hard, git checkout -- ., git clean, rm), so the files can be restored.",
   "author": {
     "name": "Adam Wanninger",
     "email": "adam@awanninger.com"
   },
-  "homepage": "https://github.com/ajwann/safety-net",
-  "repository": "https://github.com/ajwann/safety-net",
+  "homepage": "https://github.com/ajwann/snapback",
+  "repository": "https://github.com/ajwann/snapback",
   "license": "MIT",
   "keywords": [
     "git",
