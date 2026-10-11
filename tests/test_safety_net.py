@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ROOT, run_hook
-from safety_net.core import DEFAULTS, find, handle, load, restore, risk, take
+from safety_net.core import DEFAULTS, GONE, find, handle, load, restore, risk, take
 
 
 def sh(cwd, *args):
@@ -73,7 +73,8 @@ def cli(project, *args, home):
     ("git rm -f app.py", "git rm --force"),
     ("git rm --cached app.py", None),
     ("rm app.py", "rm"),
-    ("rm -rf .", "rm"),
+    ("rm -rf .", GONE),
+    ("rm -rf .git", GONE),
     ("cd sub && rm -rf ../app.py", "rm"),
     ("rm -rf *.py", "rm"),
     ("rm -rf $BUILD_DIR", "rm"),
@@ -90,10 +91,104 @@ def cli(project, *args, home):
     ("git commit -m 'rm -rf everything'", None),
     ("echo 'git reset --hard'", None),
     ("ls -la", None),
+    ("git reset \\\n  --hard HEAD~1", "git reset --hard"),
+    ("rm -rf \\\n  app.py", "rm"),
+    ("bash -c 'git reset --hard'", "git reset --hard"),
+    ("sh -lc \"cd sub && rm ../app.py\"", "rm"),
+    ("eval 'git clean -fd'", "git clean"),
+    ("bash scripts/build.sh", None),
+    ("sudo rm -rf app.py", "rm"),
 ])
 def test_risk(repo, command, expected):
     (repo / "sub").mkdir(exist_ok=True)
-    assert risk(command, repo, repo) == expected
+    found = risk(command, repo)
+    assert (found[0] if found else None) == expected
+    assert found is None or found[1].resolve() == repo.resolve()
+
+
+@pytest.fixture
+def other(tmp_path):
+    """A second repository next to the one the session runs in."""
+    d = tmp_path / "other"
+    d.mkdir()
+    sh(d, "init", "-q")
+    (d / "lib.py").write_text("v1\n")
+    commit(d, "init")
+    (d / "lib.py").write_text("v1\nuncommitted in other\n")
+    return d
+
+
+@pytest.mark.parametrize("command", [
+    "git -C {other} reset --hard",
+    "cd {other} && git reset --hard",
+    "cd {other} && rm lib.py",
+    "rm -f {other}/lib.py",
+    "bash -c 'cd {other}; git checkout -- .'",
+])
+def test_snapshot_goes_to_the_repository_the_command_acts_on(repo, other, command):
+    out = handle(pre(repo, command.format(other=other)))
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "saved snapshot 1" in ctx and f"--project {other.resolve()}" in ctx
+    assert load(repo) == [] and len(load(other)) == 1
+    assert "lib.py" in sh(other, "ls-tree", "-r", "--name-only", "refs/safety-net/1")
+
+
+def test_session_outside_any_repository_still_covers_one_it_enters(repo):
+    out = handle(pre(repo.parent, f"cd {repo.name} && git reset --hard"))
+    assert "saved snapshot 1" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_removing_the_git_directory_is_reported_not_snapshotted(repo):
+    for command in ("rm -rf .", "rm -rf .git", f"rm -rf {repo}"):
+        out = handle(pre(repo, command))
+        assert "no snapshot taken" in out["hookSpecificOutput"]["additionalContext"]
+        assert out["systemMessage"] == "safety-net: no snapshot taken."
+    assert load(repo) == []
+
+
+def test_worktree_snapshots_stay_with_their_worktree(repo, isolated):
+    commit(repo, "wip")
+    wt = repo.parent / "wt"
+    sh(repo, "worktree", "add", "-q", str(wt), "-b", "side")
+    (wt / "only-wt.txt").write_text("worktree work\n")
+    assert "saved snapshot 1" in handle(pre(wt, "git clean -fd"))["hookSpecificOutput"]["additionalContext"]
+    code, text = cli(repo, "list", home=isolated)
+    assert code == 0 and "no snapshots for this working tree" in text and f"--project {wt.resolve()}" in text
+    code, text = cli(repo, "restore", "1", home=isolated)
+    assert code == 1 and "another working tree" in text and not (repo / "only-wt.txt").exists()
+    (wt / "only-wt.txt").unlink()
+    code, _ = cli(wt, "restore", home=isolated)
+    assert code == 0 and (wt / "only-wt.txt").read_text() == "worktree work\n"
+    (repo / "app.py").write_text("same tree as nothing before\n")
+    assert handle(pre(repo, "git checkout -- .")) is not None          # main worktree gets its own snapshot
+
+
+def test_nested_repository_and_odd_names(repo, isolated):
+    nested = repo / "vendor"
+    nested.mkdir()
+    sh(nested, "init", "-q")
+    (nested / "n.txt").write_text("n\n")
+    commit(nested, "n")
+    (repo / "sp ace é.txt").write_text("odd\n")
+    handle(pre(repo, "git clean -fd"))
+    (repo / "sp ace é.txt").unlink()
+    code, text = cli(repo, "show", home=isolated)
+    assert "would come back: sp ace é.txt" in text and "would come back: vendor" not in text
+    assert "not in the snapshot (nested repository or submodule): vendor" in text
+    code, _ = cli(repo, "restore", "1", "sp ace é.txt", home=isolated)
+    assert code == 0 and (repo / "sp ace é.txt").read_text() == "odd\n"
+
+
+def test_parallel_hooks_get_distinct_ids(repo, isolated):
+    import concurrent.futures
+    def one(i):
+        (repo / f"p{i}.txt").write_text(f"{i}\n")
+        return run_hook(pre(repo, f"rm p{i}.txt"), isolated)
+    with concurrent.futures.ThreadPoolExecutor(6) as ex:
+        list(ex.map(one, range(6)))
+    rows = load(repo)
+    refs = sh(repo, "for-each-ref", "--format=%(refname)", "refs/safety-net/").split()
+    assert len({r["id"] for r in rows}) == len(rows) == len(refs) >= 1
 
 
 def test_snapshot_then_restore_after_reset_hard_and_clean(repo, isolated):

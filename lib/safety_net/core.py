@@ -1,6 +1,7 @@
 """Snapshot the working tree before a Bash command that can destroy uncommitted work, and restore it later."""
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -49,10 +50,12 @@ def _short_flags(args: list) -> str:
     return "".join(a[1:] for a in args if re.fullmatch(r"-[A-Za-z]+", a))
 
 
-def _git_risk(words: list, cwd: Path) -> Optional[str]:
-    sub, args, chdir = _git_sub(words)
-    if chdir:
-        cwd = (cwd / chdir) if not os.path.isabs(chdir) else Path(chdir)
+def _join(cwd: Path, d: str) -> Path:
+    d = os.path.expanduser(d)
+    return Path(d) if os.path.isabs(d) else cwd / d
+
+
+def _git_risk(sub: str, args: list, cwd: Path) -> Optional[str]:
     longs = {a.split("=")[0] for a in args if a.startswith("--")}
     short = _short_flags(args)
     plain = [a for a in args if not a.startswith("-")]
@@ -80,15 +83,22 @@ def _git_risk(words: list, cwd: Path) -> Optional[str]:
     return None
 
 
+def _known(target: str) -> bool:
+    """False for a target whose location cannot be read off the command line."""
+    return not re.search(r"[$`*?\[]", target)
+
+
+def _abs(target: str, cwd: Path) -> Path:
+    return Path(os.path.normpath(str(_join(cwd, target))))
+
+
 def _targets_matter(targets: list, cwd: Path, root: Path) -> bool:
     """False when every rm target is known to be outside the repository, git-ignored or absent."""
     inside = []
     for t in targets:
-        if t.startswith("~"):
-            t = os.path.expanduser(t)
         if "$" in t or "`" in t:
             return True  # cannot know where it points
-        p = Path(os.path.normpath(t if os.path.isabs(t) else str(cwd / t)))
+        p = _abs(t, cwd)
         try:
             p.resolve().relative_to(root.resolve())
             inside.append(str(p))
@@ -100,7 +110,7 @@ def _targets_matter(targets: list, cwd: Path, root: Path) -> bool:
                 continue
     if not inside:
         return False
-    plain = [p for p in inside if not re.search(r"[*?\[]", p)]
+    plain = [p for p in inside if _known(p)]
     if len(plain) < len(inside):
         return True  # a glob may match anything
     plain = [p for p in plain if os.path.lexists(p)]  # removing what is not there loses nothing
@@ -114,33 +124,89 @@ def _targets_matter(targets: list, cwd: Path, root: Path) -> bool:
         return True
 
 
-def risk(command: str, cwd: Path, root: Path, patterns: Optional[list] = None) -> Optional[str]:
-    """Short label of the first destructive thing in `command`, or None."""
+def _hits_gitdir(targets: list, cwd: Path, root: Path) -> bool:
+    """True when a target is the repository's git directory or holds it: the snapshots would go with it."""
+    try:
+        gitdir = Path(_common_dir(root))
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return False
+    for t in targets:
+        if _known(t):
+            p = _abs(t, cwd).resolve()
+            if p == gitdir or p in gitdir.parents:
+                return True
+    return False
+
+
+def _roots(cwd: Path, targets: list) -> list:
+    """Repositories an rm may touch: the one it runs in, then the ones its targets sit in."""
+    dirs = [cwd]
+    for t in targets[:8]:
+        if _known(t):
+            p = _abs(t, cwd)
+            dirs.append(p if p.is_dir() and not p.is_symlink() else p.parent)
+    out = []
+    for d in dirs:
+        root = repo_root(d) if d.is_dir() else None
+        if root and root not in out:
+            out.append(root)
+    return out
+
+
+GONE = "rm of the repository"   # nothing to snapshot into: the command removes .git itself
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+_RM = {"rm", "unlink", "shred", "truncate", "rmdir"}
+
+
+def risk(command: str, cwd: Path, patterns: Optional[list] = None, _depth: int = 0) -> Optional[tuple]:
+    """(short label, repository root) of the first destructive thing in `command`, or None.
+
+    The repository is the one the destructive part acts on, which `cd` and `git -C` can make
+    different from the one the session runs in."""
+    start = cwd
+    command = re.sub(r"\\\r?\n", " ", command)  # join continued lines
     for seg in hookio.segments(command):
         w = list(seg)
         if w and w[0] == "xargs":
             w = [x for x in w[1:] if not x.startswith("-")] or w
             if w[0] == "rm":
-                return "rm"
+                root = repo_root(cwd)
+                if root:
+                    return "rm", root
         tool = os.path.basename(w[0])
-        if tool == "cd" and len(w) > 1:
-            cwd = Path(w[1]) if os.path.isabs(w[1]) else cwd / w[1]
+        if tool in ("cd", "pushd") and len(w) > 1 and _known(w[1]) and w[1] != "-":
+            cwd = _join(cwd, w[1])
+        elif tool in _SHELLS | {"eval"} and _depth < 3:
+            flag = next((i for i, a in enumerate(w) if re.fullmatch(r"-[A-Za-z]*c", a)), None)
+            script = " ".join(w[1:]) if tool == "eval" else (w[flag + 1] if flag and flag + 1 < len(w) else "")
+            found = risk(script, cwd, None, _depth + 1) if script else None
+            if found:
+                return found
         elif tool == "git":
-            label = _git_risk(w, cwd)
-            if label:
-                return label
-        elif tool in ("rm", "unlink", "shred", "truncate", "rmdir"):
+            sub, args, chdir = _git_sub(w)
+            where = _join(cwd, chdir) if chdir else cwd
+            label = _git_risk(sub, args, where)
+            root = repo_root(where) if label else None
+            if root:
+                return label, root
+        elif tool in _RM:
             targets = [a for a in w[1:] if not a.startswith("-") or a == "-"]
             if tool == "truncate":
                 targets = [t for t in targets if not re.fullmatch(r"[+\-<>/%]?\d+[A-Za-z]*", t)]
-            if targets and _targets_matter(targets, cwd, root):
-                return tool
+            for root in _roots(cwd, targets) if targets else []:
+                if _hits_gitdir(targets, cwd, root):
+                    return GONE, root
+                if _targets_matter(targets, cwd, root):
+                    return tool, root
         elif tool == "find" and ("-delete" in w or ("-exec" in w and "rm" in w[w.index("-exec"):])):
-            return "find -delete"
-    for p in patterns or []:
+            root = repo_root(cwd)
+            if root:
+                return "find -delete", root
+    root = repo_root(start) if patterns else None
+    for p in (patterns or []) if root else []:
         try:
             if re.search(p, command):
-                return f"pattern {p}"
+                return f"pattern {p}", root
         except re.error as e:
             hookio.log_error(PLUGIN, f"bad pattern {p!r}: {e}")
     return None
@@ -200,11 +266,32 @@ _IDENT = {"GIT_AUTHOR_NAME": "safety-net", "GIT_AUTHOR_EMAIL": "safety-net@local
 
 # ---------------------------------------------------------------- snapshot index
 
+def _common_dir(root: Path) -> str:
+    common = git(root, "rev-parse", "--git-common-dir").strip()
+    return os.path.realpath(common if os.path.isabs(common) else os.path.join(root, common))
+
+
 def index_file(root: Path) -> Path:
     """One index per repository. Keyed on the common git dir, because refs are shared by all worktrees."""
-    common = git(root, "rev-parse", "--git-common-dir").strip()
-    common = os.path.realpath(common if os.path.isabs(common) else os.path.join(root, common))
-    return hookio.data_dir(PLUGIN) / (hashlib.sha1(common.encode()).hexdigest()[:16] + ".jsonl")
+    return hookio.data_dir(PLUGIN) / (hashlib.sha1(_common_dir(root).encode()).hexdigest()[:16] + ".jsonl")
+
+
+@contextlib.contextmanager
+def _locked(root: Path):
+    """One writer per repository at a time: hooks of parallel Bash calls run concurrently."""
+    with open(index_file(root).with_suffix(".lock"), "w") as f:
+        try:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        yield
+
+
+def here(root: Path, rows: list) -> list:
+    """Rows usable in this worktree: its own working-tree snapshots, and stash entries (shared by all)."""
+    me = os.path.realpath(root)
+    return [r for r in rows if r.get("kind") == "stash" or os.path.realpath(r.get("root") or me) == me]
 
 
 def load(root: Path) -> list:
@@ -247,21 +334,23 @@ def _add(root: Path, rows: list, cfg: dict, **row) -> dict:
 
 def take(root: Path, cfg: dict, command: str, why: str, session: str = "") -> Optional[dict]:
     """Snapshot the working tree. Returns the new row, or None when nothing changed since the last one."""
-    rows = load(root)
-    tree = snapshot_tree(root, cfg.get("include_ignored") or [])
-    last_tree = next((r for r in reversed(rows) if r.get("kind") == "tree"), None)
-    if last_tree and last_tree.get("tree") == tree:
-        return None
-    head = git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).strip()
-    parents = ["-p", head] if head else []
-    commit = git(root, "commit-tree", tree, *parents, "-m", f"safety-net: before {command[:200]}",
-                 env=dict(os.environ, **_IDENT)).strip()
-    return _add(root, rows, cfg, kind="tree", tree=tree, commit=commit, head=head, why=why,
-                cmd=command[:300], session=session)
+    with _locked(root):
+        rows = load(root)
+        tree = snapshot_tree(root, cfg.get("include_ignored") or [])
+        last_tree = next((r for r in reversed(here(root, rows)) if r.get("kind") == "tree"), None)
+        if last_tree and last_tree.get("tree") == tree:
+            return None
+        head = git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).strip()
+        parents = ["-p", head] if head else []
+        commit = git(root, "commit-tree", tree, *parents, "-m", f"safety-net: before {command[:200]}",
+                     env=dict(os.environ, **_IDENT)).strip()
+        return _add(root, rows, cfg, kind="tree", tree=tree, commit=commit, head=head, why=why,
+                    cmd=command[:300], session=session)
 
 
 def pin_stashes(root: Path, cfg: dict, command: str, session: str = "") -> list:
     """Keep the stash entries a `git stash drop|clear` is about to discard reachable."""
+    command = re.sub(r"\\\r?\n", " ", command)
     words = next((s for s in hookio.segments(command) if s[:1] == ["git"] and "stash" in s), [])
     _, args, _ = _git_sub(words)
     plain = [a for a in args if not a.startswith("-")]
@@ -273,13 +362,14 @@ def pin_stashes(root: Path, cfg: dict, command: str, session: str = "") -> list:
             ref = f"stash@{{{ref}}}"
         commits = git(root, "rev-parse", "-q", "--verify", ref, check=False).split()
     out = []
-    for c in commits:
-        rows = load(root)
-        if any(r.get("commit") == c for r in rows):
-            continue
-        subject = git(root, "log", "-1", "--format=%s", c, check=False).strip()
-        out.append(_add(root, rows, cfg, kind="stash", commit=c, why="git stash " + plain[0],
-                        cmd=command[:300], session=session, subject=subject))
+    with _locked(root):
+        for c in commits:
+            rows = load(root)
+            if any(r.get("commit") == c for r in rows):
+                continue
+            subject = git(root, "log", "-1", "--format=%s", c, check=False).strip()
+            out.append(_add(root, rows, cfg, kind="stash", commit=c, why="git stash " + (plain[0] if plain else "drop"),
+                            cmd=command[:300], session=session, subject=subject))
     return out
 
 
@@ -287,23 +377,34 @@ def pin_stashes(root: Path, cfg: dict, command: str, session: str = "") -> list:
 
 def find(root: Path, ident: str) -> dict:
     rows = load(root)
-    if not rows:
-        raise LookupError("no snapshots for this repository")
+    mine = here(root, rows)
     if ident in ("last", "latest", ""):
-        return rows[-1]
+        if not mine:
+            raise LookupError("no snapshots for this working tree")
+        return mine[-1]
     for r in rows:
         if str(r["id"]) == ident.lstrip("#"):
+            if r not in mine:
+                raise LookupError(f"snapshot {r['id']} belongs to another working tree of this repository; "
+                                  f"restore it there: safety-net restore {r['id']} --project {r.get('root')}")
             return r
     raise LookupError(f"no snapshot {ident}; `safety-net list` shows the ones that exist")
+
+
+def gitlinks(root: Path, tree: str) -> set:
+    """Paths a snapshot records only as a pointer: nested repositories and submodules. Their files are not in it."""
+    out = git(root, "ls-tree", "-r", "-z", tree, check=False)
+    return {e.partition("\t")[2] for e in out.split("\0") if e.startswith("160000 ")}
 
 
 def differences(root: Path, row: dict, cfg: dict) -> list:
     """[(status, path)] of what restoring `row` would change: M = reverted, A = brought back."""
     now = snapshot_tree(root, cfg.get("include_ignored") or [])
+    skip = gitlinks(root, row["tree"])
+    fields = git(root, "diff", "--name-status", "--no-renames", "--no-ext-diff", "-z", now, row["tree"]).split("\0")
     out = []
-    for line in git(root, "diff", "--name-status", "--no-renames", "--no-ext-diff", now, row["tree"]).splitlines():
-        status, _, path = line.partition("\t")
-        if status[:1] in ("A", "M", "T"):
+    for status, path in zip(fields[0::2], fields[1::2]):
+        if status[:1] in ("A", "M", "T") and path not in skip:
             out.append(("A" if status[0] == "A" else "M", path))
     return out
 
@@ -348,27 +449,31 @@ def handle(event: dict) -> Optional[dict]:
     if not cfg.get("enabled", True):
         return None
     cwd = Path(event.get("cwd") or hookio.project_dir(event))
-    root = repo_root(cwd)
-    if not root:
+    if not shutil.which("git"):
         return None
-    why = risk(command, cwd, root, cfg.get("patterns"))
-    if not why:
+    found = risk(command, cwd, cfg.get("patterns"))
+    if not found:
         return None
+    why, root = found
+    there = "" if repo_root(cwd) == root else f" --project {root}"
     session = event.get("session_id") or ""
-    if why.startswith("git stash"):
+    if why == GONE:
+        text = (f"safety-net: no snapshot taken. This command removes the git directory of {root}, which is where "
+                "snapshots are kept, so safety-net cannot bring anything back afterwards.")
+    elif why.startswith("git stash"):
         rows = pin_stashes(root, cfg, command, session)
         if not rows:
             return None
         ids = ", ".join(str(r["id"]) for r in rows)
         text = (f"safety-net: kept the stash entr{'y' if len(rows) == 1 else 'ies'} this command discards "
-                f"(snapshot {ids}). `safety-net restore <id>` puts one back on the stash list.")
+                f"(snapshot {ids}). `safety-net restore <id>{there}` puts one back on the stash list.")
     else:
         row = take(root, cfg, command, why, session)
         if not row:
             return None  # identical to the previous snapshot: already covered
         text = (f"safety-net: saved snapshot {row['id']} of the working tree before this command ({why}). "
-                f"If it loses work, `safety-net show {row['id']}` lists what differs and "
-                f"`safety-net restore {row['id']} [paths]` brings the files back.")
+                f"If it loses work, `safety-net show {row['id']}{there}` lists what differs and "
+                f"`safety-net restore {row['id']} [paths]{there}` brings the files back.")
     out = hookio.context("PreToolUse", text)
     if cfg.get("announce", True):
         out = hookio.with_system_message(out, text.split(". ")[0] + ".")

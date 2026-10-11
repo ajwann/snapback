@@ -22,4 +22,6 @@ Facts to rely on:
 - Git-ignored files are in a snapshot only if `include_ignored` in `.claude/safety-net.json` matched them.
 - A "stash entry" snapshot is a stash that `git stash drop` or `clear` discarded. Restoring it puts it
   back on the stash list; apply it with `git stash pop`.
+- Snapshots belong to the repository and worktree the command acted on. If that is not the current
+  directory, add `--project <dir>` to each command.
 - If no snapshot covers the loss, say so plainly. Do not present other recovery routes as certain.

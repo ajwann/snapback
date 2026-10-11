@@ -12,7 +12,11 @@ Commands that trigger a snapshot:
 - `git stash drop` and `git stash clear` (the discarded stash entries are kept instead)
 - `rm`, `unlink`, `shred`, `truncate`, `find -delete`, `xargs rm`
 
-`rm` is ignored when every target is outside the repository or git-ignored, so clearing a scratch
+These are also recognised inside `bash -c '...'`, `sh -c` and `eval`. The snapshot is taken in the
+repository the command acts on, so `cd ../other && git reset --hard` and `git -C ../other reset --hard`
+protect `../other`, and the restore hint Claude sees names that repository.
+
+`rm` is ignored when every target is outside a repository, git-ignored or absent, so clearing a scratch
 directory or `node_modules` takes no snapshot. A snapshot is also skipped when nothing changed since the
 previous one. The command itself is never blocked or delayed for approval.
 
@@ -34,6 +38,7 @@ Or ask Claude to undo it: the bundled `/safety-net:undo` skill walks through the
 - A restore first snapshots the current state, so a restore can itself be undone.
 - Files created after the snapshot are left alone.
 - A kept stash entry is restored onto the stash list; `git stash pop` applies it.
+- With several worktrees, each one lists and restores its own snapshots.
 
 **Hooks:** `PreToolUse` on Bash. **Config:** `{"enabled": true, "keep": 50, "max_age_days": 14, "patterns": [], "include_ignored": [], "announce": true}`.
 Git repositories only.
@@ -61,6 +66,13 @@ Settings are read from `~/.claude/safety-net.json` and then `<project>/.claude/s
 
 - It only sees commands Claude runs through the Bash tool. Commands you type in another terminal, and
   deletions made from inside a script or build tool, take no snapshot.
+- It covers deleting and discarding, not overwriting: `mv`, `cp`, `> file` and `sed -i` take no snapshot
+  unless you add them to `patterns`.
+- `rm -rf .git`, or `rm -rf` of the whole repository, cannot be undone: the snapshots live in `.git`.
+  safety-net says so instead of taking one.
+- A snapshot copies untracked files into the repository's object store, so a large untracked file that
+  is not git-ignored makes `.git` grow by about its size until the snapshot expires.
+- A file that was staged and then deleted from disk is not in the snapshot.
 - Git-ignored files are not captured unless `include_ignored` matches them.
 - Files inside a submodule or a nested repository are not captured by the outer repository's snapshot.
 - Outside a git repository it does nothing.
@@ -71,7 +83,7 @@ It is Python 3.9+ standard library only, makes no network requests, and sends no
 
 - Runs `git` in the project to write the snapshot commit and its ref under `refs/safety-net/`.
 - Stores the list of snapshots for each repository in `~/.claude/safety-net/`.
-- To remove everything it stored in a repository: `git for-each-ref --format='%(refname)' refs/safety-net/ | xargs -n1 git update-ref -d`.
+- To remove everything it stored in a repository: `git for-each-ref --format='%(refname)' refs/safety-net/ | xargs -n1 git update-ref -d`, then `git gc --prune=now` to free the space.
 
 ## Development
 

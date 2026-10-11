@@ -11,7 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 import hookio  # noqa: E402
-from safety_net.core import DEFAULTS, PLUGIN, describe, differences, find, load, repo_root, restore  # noqa: E402
+from safety_net.core import (DEFAULTS, PLUGIN, describe, differences, find, gitlinks, here, load,  # noqa: E402
+                             repo_root, restore)
 
 
 def main() -> int:
@@ -29,10 +30,13 @@ def main() -> int:
     cfg = hookio.load_config(PLUGIN, root, DEFAULTS)
     if a.action == "list":
         rows = load(root)
-        if not rows:
-            print("no snapshots for this repository yet")
-        for r in reversed(rows):
+        mine = here(root, rows)
+        if not mine:
+            print("no snapshots for this working tree yet")
+        for r in reversed(mine):
             print(describe(r))
+        for other in sorted({r.get("root") for r in rows if r not in mine}):
+            print(f"more in another working tree of this repository: safety-net list --project {other}")
         return 0
     try:
         row = find(root, a.id)
@@ -46,6 +50,8 @@ def main() -> int:
                 print("  nothing to restore: every file in the snapshot matches the working tree")
             for status, path in changes:
                 print(f"  {'missing now, would come back' if status == 'A' else 'differs now, would be reverted'}: {path}")
+            for path in sorted(gitlinks(root, row["tree"])):
+                print(f"  not in the snapshot (nested repository or submodule): {path}")
             return 0
         for line in restore(root, row, cfg, a.paths, cwd):
             print(line)
